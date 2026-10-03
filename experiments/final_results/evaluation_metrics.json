@@ -1,0 +1,134 @@
+{
+  "status": "completed",
+  "timestamp": 1791049149.228821,
+  "total_pairs_evaluated": 40,
+  "genuine_pairs": 20,
+  "impostor_pairs": 20,
+  "threshold": 45.0,
+  "rectified_metrics": {
+    "roc_auc": 0.635,
+    "eer": 0.3,
+    "eer_threshold": 26.0,
+    "accuracy": 0.525,
+    "precision": 1.0,
+    "recall": 0.05,
+    "f1_score": 0.0952,
+    "far": 0.0,
+    "frr": 0.95,
+    "match_rate": 0.05
+  },
+  "original_metrics": {
+    "roc_auc": 0.6475,
+    "eer": 0.425,
+    "eer_threshold": 26.0,
+    "match_rate": 0.15
+  },
+  "rectification_outcomes": {
+    "improved": 6,
+    "degraded": 9,
+    "unchanged": 5
+  },
+  "runtime": {
+    "avg_match_time_ms": 1927.98,
+    "median_match_time_ms": 1482.67,
+    "total_evaluation_time_s": 89.01
+  },
+  "score_distribution": {
+    "bin_edges": [
+      0.0,
+      0.05,
+      0.1,
+      0.15,
+      0.2,
+      0.25,
+      0.3,
+      0.35,
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6,
+      0.65,
+      0.7,
+      0.75,
+      0.8,
+      0.85,
+      0.9,
+      0.95,
+      1.0
+    ],
+    "genuine_counts": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "impostor_counts": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "roc_curve": {
+    "fpr": [
+      0.0,
+      0.0,
+      0.1,
+      0.3,
+      0.35,
+      0.9,
+      1.0
+    ],
+    "tpr": [
+      0.0,
+      0.05,
+      0.05,
+      0.2,
+      0.75,
+      1.0,
+      1.0
+    ],
+    "thresholds": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  }
+}

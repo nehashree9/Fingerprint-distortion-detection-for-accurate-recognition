@@ -1,5 +1,24 @@
-import React, { useState, useRef } from 'react';
-import { Fingerprint, UploadCloud, CheckCircle2, AlertCircle, RefreshCw, Layers, ShieldCheck, FileCheck, Search, Activity, Image as ImageIcon } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  Fingerprint,
+  UploadCloud,
+  CheckCircle2,
+  AlertCircle,
+  RefreshCw,
+  Search,
+  Activity,
+  Layers,
+  ShieldCheck,
+  BarChart3,
+  TrendingUp,
+  Users,
+  Database,
+  Sparkles,
+  Zap,
+  Sliders,
+  Check,
+  Info
+} from 'lucide-react';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -7,43 +26,162 @@ function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
 }
 
-type AuthResult = {
-  authenticated: boolean;
-  identity_code: string;
+// API Base URL - defaults to local FastAPI backend
+const API_BASE = 'http://127.0.0.1:8000';
+
+type Candidate = {
+  fingerprint_id: number;
+  subject_id: string;
+  family_id: string | null;
+  member_type: string | null;
+  filename: string | null;
+  image_path: string | null;
+  score: number;
+  raw_score: number;
+  matched_minutiae: number;
+  match: boolean;
+};
+
+type SearchResult = {
+  status: string;
+  matcher: string;
+  match_found: boolean;
+  match_status: string;
   distortion_probability: number;
+  clean_probability: number;
+  distorted_probability: number;
+  predicted_class: string;
+  decision_threshold: number;
   is_distorted: boolean;
+  force_rectification: boolean;
   rectification_applied: boolean;
-  best_score: number;
-  best_raw_score: number;
-  best_impression_id: number;
+  rectification_status: string;
   original_image_url: string | null;
   rectified_image_url: string | null;
-  scores: Array<{
-    impression_id: number;
-    score: number;
-    raw_score: number;
-    decision: boolean;
-  }>;
+  best_match: Candidate | null;
+  candidates: Candidate[];
+  threshold: number;
+  processing_time_ms: number;
+  stage_times?: Record<string, number>;
+  total_gallery_count: number;
+};
+
+type DatasetStats = {
+  total_fingerprints: number;
+  total_subjects: number;
+  total_families: number;
+  total_templates: number;
+  generated_templates: number;
+  failed_templates: number;
+  pending_templates: number;
+  distortion_breakdown?: Record<string, number>;
+};
+
+type EvaluationMetrics = {
+  status?: string;
+  total_pairs_evaluated?: number;
+  genuine_pairs?: number;
+  impostor_pairs?: number;
+  threshold?: number;
+  rectified_metrics?: {
+    roc_auc: number;
+    eer: number;
+    eer_threshold: number;
+    accuracy: number;
+    precision: number;
+    recall: number;
+    f1_score: number;
+    far: number;
+    frr: number;
+    match_rate: number;
+  };
+  original_metrics?: {
+    roc_auc: number;
+    eer: number;
+    eer_threshold: number;
+    match_rate: number;
+  };
+  rectification_outcomes?: {
+    improved: number;
+    degraded: number;
+    unchanged: number;
+  };
+  runtime?: {
+    avg_match_time_ms: number;
+    median_match_time_ms: number;
+    total_evaluation_time_s: number;
+  };
+  score_distribution?: {
+    bin_edges: number[];
+    genuine_counts: number[];
+    impostor_counts: number[];
+  };
+  roc_curve?: {
+    fpr: number[];
+    tpr: number[];
+    thresholds: number[];
+  };
 };
 
 export default function App() {
-  const [identityCode, setIdentityCode] = useState('');
+  const [activeTab, setActiveTab] = useState<'recognition' | 'analytics' | 'dataset'>('recognition');
+
+  // Recognition state
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [result, setResult] = useState<AuthResult | null>(null);
+  const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
+  const [currentStage, setCurrentStage] = useState<number>(0);
+  const [customThreshold, setCustomThreshold] = useState<number>(45.0);
+  const [rectificationMode, setRectificationMode] = useState<'auto' | 'force'>('auto');
+
+  // Analytics & Dataset state
+  const [stats, setStats] = useState<DatasetStats | null>(null);
+  const [metrics, setMetrics] = useState<EvaluationMetrics | null>(null);
+  const [isEvaluating, setIsEvaluating] = useState(false);
+  const [evalLimit, setEvalLimit] = useState<number>(50);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch initial stats and metrics
+  useEffect(() => {
+    fetchStats();
+    fetchMetrics();
+  }, []);
+
+  const fetchStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/dataset/stats`);
+      if (res.ok) {
+        const data = await res.json();
+        setStats(data);
+      }
+    } catch {
+      // Backend may be starting up
+    }
+  };
+
+  const fetchMetrics = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/evaluation/metrics`);
+      if (res.ok) {
+        const data = await res.json();
+        setMetrics(data);
+      }
+    } catch {
+      // Backend may be starting up
+    }
+  };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setSelectedImage(file);
-      const url = URL.createObjectURL(file);
-      setImagePreview(url);
-      setResult(null);
+      setImagePreview(URL.createObjectURL(file));
+      setSearchResult(null);
       setError(null);
+      setCurrentStage(0);
     }
   };
 
@@ -56,415 +194,1110 @@ export default function App() {
     const file = e.dataTransfer.files?.[0];
     if (file && file.type.startsWith('image/')) {
       setSelectedImage(file);
-      const url = URL.createObjectURL(file);
-      setImagePreview(url);
-      setResult(null);
+      setImagePreview(URL.createObjectURL(file));
+      setSearchResult(null);
       setError(null);
+      setCurrentStage(0);
     }
   };
 
-  const handleAuthenticate = async () => {
+  const handleIdentify = async () => {
     if (!selectedImage) {
-      setError('Please select a fingerprint image.');
-      return;
-    }
-    if (!identityCode.trim()) {
-      setError('Please enter an identity code.');
+      setError('Please select or drop a fingerprint image to identify.');
       return;
     }
 
     setIsProcessing(true);
     setError(null);
-    setResult(null);
+    setSearchResult(null);
+    setCurrentStage(1);
+
+    // Progress stage simulator
+    const stageTimer1 = setTimeout(() => setCurrentStage(2), 350);
+    const stageTimer2 = setTimeout(() => setCurrentStage(3), 800);
+    const stageTimer3 = setTimeout(() => setCurrentStage(4), 1400);
 
     const formData = new FormData();
-    formData.append('identity_code', identityCode);
     formData.append('fingerprint', selectedImage);
+    formData.append('top_n', '5');
+    formData.append('threshold', customThreshold.toString());
+    formData.append('force_rectification', (rectificationMode === 'force').toString());
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/authenticate', {
+      const response = await fetch(`${API_BASE}/fingerprint/search`, {
         method: 'POST',
         body: formData,
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || 'Authentication failed on the server.');
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Biometric search failed on server.');
       }
 
-      const data: AuthResult = await response.json();
-      setResult(data);
+      const data: SearchResult = await response.json();
+      setCurrentStage(5);
+      setSearchResult(data);
     } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred.');
+      setError(err.message || 'An unexpected error occurred during fingerprint identification.');
     } finally {
+      clearTimeout(stageTimer1);
+      clearTimeout(stageTimer2);
+      clearTimeout(stageTimer3);
       setIsProcessing(false);
     }
   };
 
-  const getProcessingStages = () => {
-    if (!result) return [];
-    
-    const stages = [
-      { name: 'Image Uploaded', status: 'completed' },
-      { name: 'Distortion Detection', status: 'completed', detail: `Prob: ${(result.distortion_probability * 100).toFixed(1)}%` },
-    ];
-    
-    if (result.is_distorted) {
-      stages.push({ name: 'DDRNet Rectification', status: 'completed', detail: 'Applied' });
-    } else {
-      stages.push({ name: 'Clean Fingerprint', status: 'skipped', detail: 'Rectification skipped' });
+  const handleRunEvaluation = async () => {
+    setIsEvaluating(true);
+    try {
+      const formData = new FormData();
+      formData.append('sample_limit', evalLimit.toString());
+
+      const response = await fetch(`${API_BASE}/evaluation/run`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Evaluation failed.');
+      }
+
+      const data = await response.json();
+      setMetrics(data);
+    } catch (err: any) {
+      alert(`Evaluation error: ${err.message}`);
+    } finally {
+      setIsEvaluating(false);
     }
-    
-    stages.push(
-      { name: 'MINDTCT Minutiae', status: 'completed' },
-      { name: 'Bozorth3 Matching', status: 'completed', detail: `Best score: ${result.best_score.toFixed(4)}` },
-      { name: 'Authentication', status: result.authenticated ? 'success' : 'failed' }
-    );
-    
-    return stages;
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-blue-900 selection:text-blue-100">
-      {/* Header */}
-      <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-10 shadow-sm">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-white">
+      {/* Top Header */}
+      <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-lg">
-              <Fingerprint className="w-6 h-6 text-white" />
+          <div className="flex items-center space-x-3">
+            <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-emerald-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+              <Fingerprint className="h-6 w-6 text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-slate-100 tracking-tight leading-tight">Fingerprint Authentication System</h1>
-              <p className="text-xs text-slate-400 font-medium tracking-wide">Distortion Detection • DDRNet Rectification • Minutiae Matching</p>
+              <h1 className="font-semibold text-lg tracking-tight text-white flex items-center gap-2">
+                Fingerprint Distortion Rectification
+                <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
+                  DDRNet + SourceAFIS
+                </span>
+              </h1>
+              <p className="text-xs text-slate-400">Accurate Biometric Recognition & Research Analytics</p>
             </div>
           </div>
-          <div className="hidden sm:flex items-center text-sm font-medium text-slate-400 gap-2 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700/50">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-            System Online
-          </div>
+
+          {/* Navigation Tabs */}
+          <nav className="flex space-x-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60">
+            <button
+              onClick={() => setActiveTab('recognition')}
+              className={cn(
+                'px-4 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-2',
+                activeTab === 'recognition'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              )}
+            >
+              <Fingerprint className="h-4 w-4" />
+              Identification
+            </button>
+            <button
+              onClick={() => setActiveTab('analytics')}
+              className={cn(
+                'px-4 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-2',
+                activeTab === 'analytics'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              )}
+            >
+              <BarChart3 className="h-4 w-4" />
+              Analytics & ROC
+            </button>
+            <button
+              onClick={() => setActiveTab('dataset')}
+              className={cn(
+                'px-4 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-2',
+                activeTab === 'dataset'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              )}
+            >
+              <Database className="h-4 w-4" />
+              MySQL Gallery
+            </button>
+          </nav>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        
-        {/* Workspace Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          
-          {/* Left Column: Input */}
-          <div className="lg:col-span-5 space-y-6">
-            
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-indigo-500"></div>
-              <h2 className="text-lg font-semibold text-slate-100 mb-6 flex items-center gap-2">
-                <FileCheck className="w-5 h-5 text-blue-400" />
-                Input Fingerprint
+      {/* Main Container */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* ========================================================================= */}
+        {/* TAB 1: BIOMETRIC RECOGNITION (PRIMARY USER EXPERIENCE - NO ID REQUESTED) */}
+        {/* ========================================================================= */}
+        {activeTab === 'recognition' && (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            {/* Hero / Action Section */}
+            <div className="text-center max-w-2xl mx-auto space-y-2">
+              <h2 className="text-3xl font-bold tracking-tight text-white">
+                Fingerprint Recognition
               </h2>
-              
-              <div className="space-y-6">
-                
-                {/* Upload Area */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-2">Fingerprint Image</label>
-                  {!imagePreview ? (
-                    <div 
-                      onDragOver={handleDragOver}
-                      onDrop={handleDrop}
-                      className="border-2 border-dashed border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/50 transition-colors rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer group h-64"
-                      onClick={() => fileInputRef.current?.click()}
+              <p className="text-slate-400 text-sm">
+                Upload a single fingerprint image to identify the closest matching fingerprint in the family dataset.
+                The system automatically handles distortion detection, DDRNet rectification, and 1:N SourceAFIS matching.
+              </p>
+            </div>
+
+            {/* Upload Area */}
+            <div className="max-w-2xl mx-auto">
+              <div
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={cn(
+                  'border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all',
+                  imagePreview
+                    ? 'border-emerald-500/50 bg-slate-900/40'
+                    : 'border-slate-800 hover:border-slate-700 bg-slate-900/20 hover:bg-slate-900/40'
+                )}
+              >
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleImageChange}
+                  accept="image/png,image/jpeg,image/bmp"
+                  className="hidden"
+                />
+
+                {imagePreview ? (
+                  <div className="flex flex-col items-center space-y-4">
+                    <div className="relative group">
+                      <img
+                        src={imagePreview}
+                        alt="Fingerprint Preview"
+                        className="h-44 w-44 object-contain rounded-xl border border-slate-700 bg-black/60 shadow-inner"
+                      />
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity rounded-xl">
+                        <p className="text-xs font-medium text-white">Click or Drop to Replace</p>
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-slate-200">{selectedImage?.name}</p>
+                      <p className="text-xs text-slate-500">{(selectedImage?.size ? selectedImage.size / 1024 : 0).toFixed(1)} KB</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4 py-4">
+                    <div className="h-16 w-16 mx-auto rounded-full bg-slate-800/80 flex items-center justify-center text-slate-400">
+                      <UploadCloud className="h-8 w-8" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-slate-200">
+                        Drag & Drop Fingerprint Image
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">or click to browse your computer</p>
+                    </div>
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-800 text-slate-400 text-xs font-mono">
+                      <span>PNG, JPG, BMP</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Development / Debug Mode Controls */}
+              <div className="mt-4 p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+                  <div>
+                    <span className="font-semibold text-slate-300">Rectification Mode: </span>
+                    <span className={cn(
+                      "px-2 py-0.5 rounded font-mono text-[11px]",
+                      rectificationMode === 'force' ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                    )}>
+                      {rectificationMode === 'force' ? 'DEV / DEBUG MODE (FORCED)' : 'PRODUCTION (AUTO DETECT)'}
+                    </span>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      {rectificationMode === 'force'
+                        ? 'Forces DDRNet rectification regardless of distortion classifier prediction.'
+                        : 'Distortion classifier automatically decides whether to apply DDRNet.'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 self-end sm:self-auto">
+                    <button
+                      type="button"
+                      onClick={() => setRectificationMode('auto')}
+                      className={cn(
+                        'px-3 py-1.5 rounded-md font-medium text-xs transition-all',
+                        rectificationMode === 'auto'
+                          ? 'bg-emerald-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      )}
                     >
-                      <div className="bg-slate-800 p-4 rounded-full mb-4 group-hover:bg-blue-900/30 group-hover:text-blue-400 transition-colors">
-                        <UploadCloud className="w-8 h-8 text-slate-400 group-hover:text-blue-400" />
-                      </div>
-                      <p className="text-slate-300 font-medium mb-1">Click to upload or drag and drop</p>
-                      <p className="text-xs text-slate-500">PNG, JPG or JPEG</p>
-                    </div>
-                  ) : (
-                    <div className="relative rounded-xl border border-slate-700 overflow-hidden bg-slate-950 flex flex-col items-center justify-center h-64 group">
-                      <img src={imagePreview} alt="Fingerprint preview" className="max-h-full max-w-full object-contain p-2" />
-                      <div className="absolute inset-0 bg-slate-950/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-sm">
-                        <button 
-                          onClick={() => fileInputRef.current?.click()}
-                          className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg font-medium text-sm transition-colors border border-slate-600 shadow-lg"
-                        >
-                          Change Image
-                        </button>
-                      </div>
-                      <div className="absolute bottom-2 left-2 right-2 bg-slate-900/90 backdrop-blur-md px-3 py-2 rounded-lg border border-slate-700/50 flex items-center justify-between pointer-events-none">
-                        <span className="text-xs font-medium text-slate-300 truncate max-w-[150px]">{selectedImage?.name}</span>
-                        <span className="text-xs text-slate-500">{(selectedImage?.size ? (selectedImage.size / 1024).toFixed(1) : 0)} KB</span>
-                      </div>
-                    </div>
-                  )}
-                  <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    className="hidden" 
-                    accept="image/png, image/jpeg, image/jpg"
-                    onChange={handleImageChange}
+                      Auto Detect
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRectificationMode('force')}
+                      className={cn(
+                        'px-3 py-1.5 rounded-md font-medium text-xs transition-all flex items-center gap-1.5',
+                        rectificationMode === 'force'
+                          ? 'bg-amber-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      )}
+                    >
+                      <Sliders className="h-3 w-3" />
+                      Force Rectification
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Threshold & Action Controls */}
+              <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-900/50 p-4 rounded-xl border border-slate-800">
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <Sliders className="h-4 w-4 text-slate-400" />
+                  <label className="text-xs text-slate-400 whitespace-nowrap">
+                    Matcher Threshold: <span className="text-emerald-400 font-mono font-medium">{customThreshold}</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="20"
+                    max="80"
+                    step="5"
+                    value={customThreshold}
+                    onChange={(e) => setCustomThreshold(parseFloat(e.target.value))}
+                    className="w-32 accent-emerald-500"
                   />
                 </div>
 
-                {/* Identity Input */}
-                <div>
-                  <label htmlFor="identity" className="block text-sm font-medium text-slate-400 mb-2">Identity Code</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Search className="h-4 w-4 text-slate-500" />
+                <button
+                  onClick={handleIdentify}
+                  disabled={!selectedImage || isProcessing}
+                  className={cn(
+                    'w-full sm:w-auto px-6 py-2.5 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-all shadow-md',
+                    selectedImage && !isProcessing
+                      ? 'bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white shadow-emerald-600/20'
+                      : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                  )}
+                >
+                  {isProcessing ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin text-white" />
+                      <span>Identifying...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Search className="h-4 w-4" />
+                      <span>FIND MATCH</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {error && (
+                <div className="mt-4 p-4 rounded-xl bg-red-950/40 border border-red-800/60 flex items-start gap-3 text-red-300 text-sm">
+                  <AlertCircle className="h-5 w-5 text-red-400 flex-shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Live Processing Stages */}
+            {isProcessing && (
+              <div className="max-w-2xl mx-auto bg-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-4">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-emerald-400 animate-pulse" />
+                  Active Biometric Pipeline
+                </h3>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {[
+                    { label: 'Image uploaded', stage: 1 },
+                    { label: 'Preprocessing', stage: 2 },
+                    { label: 'Distortion correction', stage: 3 },
+                    { label: 'Template generation', stage: 4 },
+                    { label: 'Database search', stage: 5 },
+                    { label: 'Match complete', stage: 5 },
+                  ].map((s, i) => (
+                    <div
+                      key={i}
+                      className={cn(
+                        'flex items-center gap-2 p-2.5 rounded-lg border text-xs transition-all',
+                        currentStage >= s.stage
+                          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                          : 'border-slate-800 bg-slate-900/30 text-slate-500'
+                      )}
+                    >
+                      {currentStage >= s.stage ? (
+                        <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                      ) : (
+                        <div className="h-4 w-4 rounded-full border border-slate-700" />
+                      )}
+                      <span>{s.label}</span>
                     </div>
-                    <input
-                      type="text"
-                      id="identity"
-                      value={identityCode}
-                      onChange={(e) => setIdentityCode(e.target.value)}
-                      placeholder="e.g. FAMILY-13/CHILD"
-                      className="block w-full pl-10 bg-slate-950 border border-slate-700 rounded-xl py-2.5 text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-colors sm:text-sm"
-                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Processing & Inspection Previews (Original -> Rectified) */}
+            {searchResult && (
+              <div className="max-w-4xl mx-auto space-y-6">
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800">
+                    <span className="flex items-center gap-2 font-semibold text-sm text-white">
+                      <Layers className="h-4 w-4 text-cyan-400" />
+                      Geometric Distortion Rectification Pipeline
+                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={cn(
+                          'text-xs px-2.5 py-1 rounded-full font-mono font-medium',
+                          searchResult.is_distorted
+                            ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                            : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                        )}
+                      >
+                        Classifier: {searchResult.predicted_class?.toUpperCase() || (searchResult.is_distorted ? 'DISTORTED' : 'CLEAN')} (
+                        {(searchResult.is_distorted ? searchResult.distorted_probability * 100 : searchResult.clean_probability * 100).toFixed(1)}% prob)
+                      </span>
+                      <span
+                        className={cn(
+                          'text-xs px-2.5 py-1 rounded-full font-mono font-medium',
+                          searchResult.rectification_applied
+                            ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
+                            : 'bg-slate-800 text-slate-400 border border-slate-700'
+                        )}
+                      >
+                        DDRNet: {searchResult.rectification_status || (searchResult.rectification_applied ? 'APPLIED' : 'BYPASSED')}
+                        {searchResult.force_rectification ? ' (FORCED)' : ''}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Classifier probabilities bar */}
+                  <div className="mb-4 text-xs text-slate-400 flex items-center justify-between px-1">
+                    <span>
+                      Clean Prob: <strong className="text-slate-200 font-mono">{(searchResult.clean_probability * 100).toFixed(1)}%</strong>
+                    </span>
+                    <span>
+                      Distorted Prob: <strong className="text-amber-300 font-mono">{(searchResult.distorted_probability * 100).toFixed(1)}%</strong>
+                    </span>
+                    <span>
+                      Decision Cut-off: <strong className="text-slate-300 font-mono">{(searchResult.decision_threshold * 100).toFixed(1)}%</strong>
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                    {/* Original Image */}
+                    <div className="flex flex-col items-center p-4 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
+                        Original Input Fingerprint
+                      </p>
+                      {searchResult.original_image_url ? (
+                        <img
+                          src={`${API_BASE}${searchResult.original_image_url}`}
+                          alt="Original Fingerprint"
+                          className="h-56 w-56 object-contain rounded-lg border border-slate-800 bg-black"
+                        />
+                      ) : (
+                        <div className="h-56 w-56 bg-slate-900 rounded-lg flex items-center justify-center text-slate-600">
+                          Preview Unavailable
+                        </div>
+                      )}
+                      <p className="text-[11px] text-slate-500 mt-2">Query biometric image as submitted</p>
+                    </div>
+
+                    {/* Rectified or Unmodified Image */}
+                    <div className="flex flex-col items-center p-4 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                      <p className={cn(
+                        "text-xs font-semibold uppercase tracking-wider mb-3 flex items-center gap-1.5",
+                        searchResult.rectification_applied ? "text-cyan-400" : "text-emerald-400"
+                      )}>
+                        {searchResult.rectification_applied ? (
+                          <>
+                            <Sparkles className="h-3.5 w-3.5" />
+                            DDRNet Rectified Output (Applied)
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Output: Original (Unmodified)
+                          </>
+                        )}
+                      </p>
+
+                      {searchResult.rectified_image_url || searchResult.original_image_url ? (
+                        <img
+                          src={`${API_BASE}${searchResult.rectified_image_url || searchResult.original_image_url}`}
+                          alt="Rectified or Unmodified Fingerprint"
+                          className={cn(
+                            "h-56 w-56 object-contain rounded-lg bg-black",
+                            searchResult.rectification_applied
+                              ? "border border-cyan-500/40 shadow-lg shadow-cyan-500/5"
+                              : "border border-emerald-500/30"
+                          )}
+                        />
+                      ) : (
+                        <div className="h-56 w-56 bg-slate-900 rounded-lg flex items-center justify-center text-slate-500 text-xs text-center p-4">
+                          Preview Unavailable
+                        </div>
+                      )}
+
+                      <p className="text-[11px] text-slate-400 mt-2 text-center">
+                        {searchResult.rectification_applied
+                          ? "Geometric distortion rectified via DDRNet displacement field"
+                          : "No geometric rectification applied (Clean fingerprint detected). Output: Original (Unmodified)."}
+                      </p>
+                    </div>
                   </div>
                 </div>
-                
-                {error && (
-                  <div className="bg-red-950/50 border border-red-900/50 text-red-400 px-4 py-3 rounded-xl flex items-start gap-3 text-sm">
-                    <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                    <p>{error}</p>
+
+                {/* Match Result Banner & Best Match Card */}
+                {searchResult.match_found ? (
+                  /* MATCH FOUND STATE */
+                  <div className="bg-gradient-to-b from-emerald-950/40 to-slate-900/90 border border-emerald-500/40 rounded-2xl p-6 shadow-xl shadow-emerald-500/5 space-y-6">
+                    <div className="flex items-center justify-between border-b border-emerald-500/20 pb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
+                          <ShieldCheck className="h-6 w-6 text-emerald-400" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-bold text-white tracking-tight">BEST CANDIDATE IDENTIFIED</h3>
+                          <p className="text-xs text-emerald-400">
+                            Threshold Decision: PASS (SourceAFIS score {searchResult.best_match?.raw_score} &ge; {searchResult.threshold})
+                          </p>
+                        </div>
+                      </div>
+                      <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-emerald-500 text-slate-950">
+                        CANDIDATE MATCH
+                      </span>
+                    </div>
+
+                    {/* Best Match Details */}
+                    {searchResult.best_match && (
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-5 rounded-xl bg-slate-950/80 border border-emerald-500/20">
+                        <div className="space-y-1">
+                          <p className="text-xs text-slate-400">Subject / Member</p>
+                          <p className="text-lg font-bold text-emerald-300">
+                            {searchResult.best_match.subject_id}
+                          </p>
+                          <p className="text-xs text-slate-500 font-mono">
+                            {searchResult.best_match.filename}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="text-xs text-slate-400">SourceAFIS Score</p>
+                          <p className="text-2xl font-bold font-mono text-white">
+                            {searchResult.best_match.raw_score}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            Matched minutiae: {searchResult.best_match.matched_minutiae}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="text-xs text-slate-400">Operating Threshold</p>
+                          <p className="text-2xl font-bold font-mono text-slate-300">
+                            {searchResult.threshold}
+                          </p>
+                          <p className="text-xs text-slate-500">Cut-off for genuine decision</p>
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="text-xs text-slate-400">Processing Time</p>
+                          <p className="text-2xl font-bold font-mono text-cyan-400">
+                            {searchResult.processing_time_ms} ms
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            Searched {searchResult.total_gallery_count} templates
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* NO RELIABLE MATCH FOUND STATE */
+                  <div className="bg-gradient-to-b from-amber-950/30 to-slate-900/90 border border-amber-500/40 rounded-2xl p-6 shadow-xl shadow-amber-500/5 space-y-6">
+                    <div className="flex items-center justify-between border-b border-amber-500/20 pb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center">
+                          <AlertCircle className="h-6 w-6 text-amber-400" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-bold text-white tracking-tight">NO CANDIDATE REACHED THRESHOLD</h3>
+                          <p className="text-xs text-amber-400">
+                            Threshold Decision: FAIL (Nearest candidate score is below threshold {searchResult.threshold})
+                          </p>
+                        </div>
+                      </div>
+                      <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                        BELOW THRESHOLD
+                      </span>
+                    </div>
+
+                    {searchResult.best_match && (
+                      <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 text-sm text-slate-300 flex items-center justify-between">
+                        <div>
+                          <span className="text-slate-400">Nearest Candidate: </span>
+                          <span className="font-semibold text-white">{searchResult.best_match.subject_id}</span>
+                          <span className="text-xs text-slate-500 ml-2 font-mono">({searchResult.best_match.filename})</span>
+                          <span className="text-slate-400 ml-4">SourceAFIS Score: </span>
+                          <span className="font-mono text-amber-300 font-semibold">{searchResult.best_match.raw_score}</span>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          Threshold required: <span className="font-mono text-white">{searchResult.threshold}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {/* Authenticate Button */}
-                <button
-                  onClick={handleAuthenticate}
-                  disabled={isProcessing || !selectedImage || !identityCode}
-                  className="w-full relative group overflow-hidden bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3.5 px-4 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-900/20"
-                >
-                  <span className={cn("relative z-10 flex items-center justify-center gap-2", isProcessing ? "opacity-0" : "opacity-100")}>
-                    <ShieldCheck className="w-5 h-5" />
-                    Authenticate Fingerprint
-                  </span>
-                  
-                  {isProcessing && (
-                    <span className="absolute inset-0 z-10 flex items-center justify-center gap-3">
-                      <RefreshCw className="w-5 h-5 animate-spin" />
-                      Processing...
+                {/* NEAREST MATCHES TABLE */}
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                      <Users className="h-4 w-4 text-emerald-400" />
+                      Nearest Candidate Matches (Top 5 Ranking)
+                    </h3>
+                    <span className="text-xs text-slate-400">
+                      Operating Threshold: <span className="font-mono text-emerald-400">{searchResult.threshold}</span>
                     </span>
-                  )}
-                </button>
-                
-              </div>
-            </div>
-            
-            {/* Pipeline Visualization (Shows during/after processing) */}
-            {(isProcessing || result) && (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-                <h3 className="text-sm font-semibold text-slate-100 mb-4 flex items-center gap-2 uppercase tracking-wider">
-                  <Activity className="w-4 h-4 text-indigo-400" />
-                  Processing Pipeline
-                </h3>
-                <div className="space-y-3">
-                  {isProcessing ? (
-                    <div className="flex items-center gap-3 text-blue-400 text-sm font-medium">
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      Running authentication pipeline...
-                    </div>
-                  ) : (
-                    getProcessingStages().map((stage, idx) => (
-                      <div key={idx} className="flex items-start gap-3">
-                        <div className="mt-0.5">
-                          {stage.status === 'completed' && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
-                          {stage.status === 'skipped' && <RefreshCw className="w-4 h-4 text-slate-500 rotate-90" />}
-                          {stage.status === 'success' && <ShieldCheck className="w-4 h-4 text-emerald-500" />}
-                          {stage.status === 'failed' && <AlertCircle className="w-4 h-4 text-red-500" />}
-                        </div>
-                        <div>
-                          <p className={cn(
-                            "text-sm font-medium leading-tight",
-                            stage.status === 'success' ? "text-emerald-400" :
-                            stage.status === 'failed' ? "text-red-400" :
-                            stage.status === 'skipped' ? "text-slate-400" : "text-slate-200"
-                          )}>
-                            {stage.name}
-                          </p>
-                          {stage.detail && <p className="text-xs text-slate-500 mt-0.5">{stage.detail}</p>}
-                        </div>
-                      </div>
-                    ))
-                  )}
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-950/80 text-xs uppercase tracking-wider text-slate-400 border-b border-slate-800">
+                        <tr>
+                          <th className="py-3 px-4">Rank</th>
+                          <th className="py-3 px-4">Subject / Member</th>
+                          <th className="py-3 px-4">Filename</th>
+                          <th className="py-3 px-4">SourceAFIS Score</th>
+                          <th className="py-3 px-4">Threshold</th>
+                          <th className="py-3 px-4 text-right">Biometric Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+                        {searchResult.candidates.map((cand, idx) => {
+                          const isMatch = cand.raw_score >= searchResult.threshold;
+                          return (
+                            <tr
+                              key={idx}
+                              className={cn(
+                                'transition-colors',
+                                isMatch ? 'bg-emerald-950/20 hover:bg-emerald-950/30' : 'hover:bg-slate-800/40'
+                              )}
+                            >
+                              <td className="py-3.5 px-4 font-bold text-slate-300">
+                                #{idx + 1}
+                              </td>
+                              <td className="py-3.5 px-4 font-sans font-medium text-white">
+                                {cand.subject_id}
+                              </td>
+                              <td className="py-3.5 px-4 text-slate-400">
+                                {cand.filename || '—'}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <span className={cn('text-sm font-bold', isMatch ? 'text-emerald-400' : 'text-slate-300')}>
+                                  {cand.raw_score}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4 text-slate-400">
+                                {searchResult.threshold}
+                              </td>
+                              <td className="py-3.5 px-4 text-right">
+                                {isMatch ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                    <Check className="h-3 w-3" /> MATCH
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-800/80 text-slate-400 border border-slate-700/60">
+                                    BELOW THRESHOLD
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}
-            
           </div>
+        )}
 
-          {/* Right Column: Results */}
-          <div className="lg:col-span-7 space-y-6">
-            
-            {result ? (
-              <>
-                {/* Result Status Card */}
-                <div className={cn(
-                  "rounded-2xl p-6 shadow-xl relative overflow-hidden border",
-                  result.authenticated 
-                    ? "bg-slate-900 border-emerald-500/30" 
-                    : "bg-slate-900 border-red-500/30"
-                )}>
-                  <div className={cn(
-                    "absolute top-0 left-0 w-full h-1",
-                    result.authenticated ? "bg-emerald-500" : "bg-red-500"
-                  )}></div>
-                  
-                  <div className="flex items-start justify-between mb-8">
-                    <div>
-                      <p className="text-sm font-medium text-slate-400 mb-1 uppercase tracking-wider">Authentication Status</p>
-                      <h2 className={cn(
-                        "text-3xl font-bold tracking-tight",
-                        result.authenticated ? "text-emerald-400" : "text-red-400"
-                      )}>
-                        {result.authenticated ? "AUTHENTICATED" : "NOT AUTHENTICATED"}
-                      </h2>
-                    </div>
-                    <div className={cn(
-                      "p-3 rounded-xl border",
-                      result.authenticated ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : "bg-red-500/10 border-red-500/20 text-red-400"
-                    )}>
-                      {result.authenticated ? <ShieldCheck className="w-8 h-8" /> : <AlertCircle className="w-8 h-8" />}
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                    <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800">
-                      <p className="text-xs text-slate-500 font-medium mb-1">Identity</p>
-                      <p className="text-sm font-semibold text-slate-200 truncate">{result.identity_code}</p>
-                    </div>
-                    <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800">
-                      <p className="text-xs text-slate-500 font-medium mb-1">Distortion Prob</p>
-                      <p className="text-sm font-semibold text-slate-200">{(result.distortion_probability * 100).toFixed(1)}%</p>
-                    </div>
-                    <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800">
-                      <p className="text-xs text-slate-500 font-medium mb-1">Distorted</p>
-                      <p className={cn("text-sm font-semibold", result.is_distorted ? "text-amber-400" : "text-emerald-400")}>
-                        {result.is_distorted ? "Yes" : "No"}
-                      </p>
-                    </div>
-                    <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800">
-                      <p className="text-xs text-slate-500 font-medium mb-1">Rectification</p>
-                      <p className="text-sm font-semibold text-slate-200">{result.rectification_applied ? "Applied" : "Skipped"}</p>
-                    </div>
-                  </div>
-                </div>
+        {/* ========================================================================= */}
+        {/* TAB 2: RESEARCH & ANALYTICS DASHBOARD (ROC, EER, GENUINE/IMPOSTOR)        */}
+        {/* ========================================================================= */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            {/* Header with Run Evaluation action */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+                  <BarChart3 className="h-6 w-6 text-emerald-400" />
+                  Research & Biometric Analytics Dashboard
+                </h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Empirical evaluation of DDRNet distortion rectification on biometric matching performance.
+                </p>
+              </div>
 
-                {/* Images Row */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                  {/* Input Image */}
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
-                    <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
-                      <ImageIcon className="w-4 h-4 text-blue-400" />
-                      Input Fingerprint
-                    </h3>
-                    <div className="bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-center p-4 h-64 overflow-hidden relative">
-                      {result.original_image_url ? (
-                        <img 
-                          src={`http://127.0.0.1:8000${result.original_image_url}`} 
-                          alt="Original Input" 
-                          className="max-w-full max-h-full object-contain filter drop-shadow-md"
-                        />
-                      ) : (
-                        <p className="text-slate-500 text-sm">Image not available</p>
-                      )}
-                    </div>
-                  </div>
+              <div className="flex items-center gap-3">
+                <select
+                  value={evalLimit}
+                  onChange={(e) => setEvalLimit(parseInt(e.target.value))}
+                  className="bg-slate-900 border border-slate-700 text-xs rounded-xl px-3 py-2 text-slate-200"
+                >
+                  <option value={25}>Quick Sample (25 pairs)</option>
+                  <option value={50}>Standard Benchmark (50 pairs)</option>
+                  <option value={150}>Comprehensive Test (150 pairs)</option>
+                </select>
 
-                  {/* Rectified Image */}
-                  {result.rectification_applied && result.rectified_image_url && (
-                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl relative overflow-hidden">
-                       <div className="absolute top-0 right-0 p-2">
-                         <div className="text-[10px] font-bold tracking-widest text-indigo-400/80 uppercase bg-indigo-900/30 px-2 py-1 rounded border border-indigo-500/20">DDRNet Output</div>
-                       </div>
-                      <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
-                        <Layers className="w-4 h-4 text-indigo-400" />
-                        Rectified Fingerprint
-                      </h3>
-                      <div className="bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-center p-4 h-64 overflow-hidden">
-                        <img 
-                          src={`http://127.0.0.1:8000${result.rectified_image_url}`} 
-                          alt="Rectified Output" 
-                          className="max-w-full max-h-full object-contain filter drop-shadow-md"
-                        />
-                      </div>
-                    </div>
+                <button
+                  onClick={handleRunEvaluation}
+                  disabled={isEvaluating}
+                  className="px-4 py-2 rounded-xl text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-2 shadow-md transition-all disabled:opacity-50"
+                >
+                  {isEvaluating ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      Computing Metrics...
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="h-3.5 w-3.5" />
+                      Run Protocol Evaluation
+                    </>
                   )}
+                </button>
+              </div>
+            </div>
+
+            {/* If Evaluation Not Run */}
+            {metrics?.status === 'Evaluation not run' || !metrics?.rectified_metrics ? (
+              <div className="p-12 text-center bg-slate-900/40 rounded-2xl border border-slate-800 space-y-4">
+                <div className="h-16 w-16 mx-auto rounded-full bg-slate-800/80 flex items-center justify-center text-slate-500">
+                  <BarChart3 className="h-8 w-8" />
+                </div>
+                <h3 className="text-lg font-bold text-white">Evaluation not run</h3>
+                <p className="text-slate-400 text-sm max-w-md mx-auto">
+                  Run the evaluation protocol above to benchmark genuine vs impostor pairs, calculate the real ROC curve,
+                  EER, FAR/FRR distributions, and measure exact rectification improvements.
+                </p>
+                <button
+                  onClick={handleRunEvaluation}
+                  className="px-5 py-2.5 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center gap-2"
+                >
+                  Run Benchmark Now
+                </button>
+              </div>
+            ) : (
+              /* REAL METRICS DISPLAY */
+              <div className="space-y-8">
+                {/* Top 4 KPI Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Card 1: ROC-AUC */}
+                  <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">ROC-AUC</p>
+                    <p className="text-3xl font-extrabold font-mono text-emerald-400">
+                      {(metrics.rectified_metrics.roc_auc * 100).toFixed(2)}%
+                    </p>
+                    <p className="text-[11px] text-slate-500 flex items-center gap-1">
+                      <Info className="h-3 w-3" /> Area under ROC (not accuracy)
+                    </p>
+                  </div>
+
+                  {/* Card 2: EER */}
+                  <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Equal Error Rate (EER)</p>
+                    <p className="text-3xl font-extrabold font-mono text-cyan-400">
+                      {(metrics.rectified_metrics.eer * 100).toFixed(2)}%
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      At threshold {(metrics.rectified_metrics.eer_threshold * 100).toFixed(1)}%
+                    </p>
+                  </div>
+
+                  {/* Card 3: Match Rate */}
+                  <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Genuine Match Rate</p>
+                    <p className="text-3xl font-extrabold font-mono text-violet-400">
+                      {(metrics.rectified_metrics.match_rate * 100).toFixed(1)}%
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Baseline: {((metrics.original_metrics?.match_rate || 0) * 100).toFixed(1)}%
+                    </p>
+                  </div>
+
+                  {/* Card 4: Avg Match Time */}
+                  <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Avg Match Time</p>
+                    <p className="text-3xl font-extrabold font-mono text-amber-400">
+                      {metrics.runtime?.avg_match_time_ms || 0} ms
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Median: {metrics.runtime?.median_match_time_ms || 0} ms
+                    </p>
+                  </div>
                 </div>
 
-                {/* Matching Details */}
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
-                  <h3 className="text-sm font-semibold text-slate-100 mb-6 flex items-center gap-2 uppercase tracking-wider">
-                    <Search className="w-4 h-4 text-slate-400" />
-                    Bozorth3 Matching Details
+                {/* Secondary Biometric Verification Metrics */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+                  <div className="p-3 bg-slate-900/50 rounded-xl border border-slate-800 text-center">
+                    <p className="text-[11px] text-slate-400">FAR (False Accept)</p>
+                    <p className="text-lg font-bold font-mono text-rose-400">
+                      {((metrics.rectified_metrics.far || 0) * 100).toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className="p-3 bg-slate-900/50 rounded-xl border border-slate-800 text-center">
+                    <p className="text-[11px] text-slate-400">FRR (False Reject)</p>
+                    <p className="text-lg font-bold font-mono text-amber-400">
+                      {((metrics.rectified_metrics.frr || 0) * 100).toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className="p-3 bg-slate-900/50 rounded-xl border border-slate-800 text-center">
+                    <p className="text-[11px] text-slate-400">Precision</p>
+                    <p className="text-lg font-bold font-mono text-slate-200">
+                      {((metrics.rectified_metrics.precision || 0) * 100).toFixed(1)}%
+                    </p>
+                  </div>
+                  <div className="p-3 bg-slate-900/50 rounded-xl border border-slate-800 text-center">
+                    <p className="text-[11px] text-slate-400">Recall</p>
+                    <p className="text-lg font-bold font-mono text-slate-200">
+                      {((metrics.rectified_metrics.recall || 0) * 100).toFixed(1)}%
+                    </p>
+                  </div>
+                  <div className="p-3 bg-slate-900/50 rounded-xl border border-slate-800 text-center">
+                    <p className="text-[11px] text-slate-400">F1-Score</p>
+                    <p className="text-lg font-bold font-mono text-slate-200">
+                      {((metrics.rectified_metrics.f1_score || 0) * 100).toFixed(1)}%
+                    </p>
+                  </div>
+                  <div className="p-3 bg-slate-900/50 rounded-xl border border-slate-800 text-center">
+                    <p className="text-[11px] text-slate-400">Pairs Evaluated</p>
+                    <p className="text-lg font-bold font-mono text-slate-200">
+                      {metrics.total_pairs_evaluated || 0}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Rectification Outcomes: Improved vs Degraded vs Unchanged */}
+                <div className="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
+                  <h3 className="text-sm font-semibold text-white flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                      <TrendingUp className="h-4 w-4 text-emerald-400" />
+                      Rectification Outcomes (Path A vs Path B)
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      Does DDRNet rectification improve fingerprint matching scores?
+                    </span>
                   </h3>
-                  
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 text-xs font-medium text-slate-500 uppercase tracking-wider">
-                      <span>Enrolled Impression</span>
-                      <span>Score</span>
-                    </div>
-                    
-                    <div className="space-y-2">
-                      {result.scores.map((score, idx) => {
-                        const isBest = score.impression_id === result.best_impression_id;
+
+                  {metrics.rectification_outcomes && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-500/20 text-center">
+                          <p className="text-xs text-emerald-400 font-medium">Improved Pairs</p>
+                          <p className="text-2xl font-bold font-mono text-emerald-300">
+                            {metrics.rectification_outcomes.improved}
+                          </p>
+                          <p className="text-[11px] text-slate-500">rectified &gt; original</p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-rose-950/30 border border-rose-500/20 text-center">
+                          <p className="text-xs text-rose-400 font-medium">Degraded Pairs</p>
+                          <p className="text-2xl font-bold font-mono text-rose-300">
+                            {metrics.rectification_outcomes.degraded}
+                          </p>
+                          <p className="text-[11px] text-slate-500">rectified &lt; original</p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-slate-800/40 border border-slate-700/40 text-center">
+                          <p className="text-xs text-slate-300 font-medium">Unchanged Pairs</p>
+                          <p className="text-2xl font-bold font-mono text-slate-300">
+                            {metrics.rectification_outcomes.unchanged}
+                          </p>
+                          <p className="text-[11px] text-slate-500">equal similarity</p>
+                        </div>
+                      </div>
+
+                      {/* Stacked Outcome Bar */}
+                      {(() => {
+                        const total =
+                          (metrics.rectification_outcomes.improved || 0) +
+                          (metrics.rectification_outcomes.degraded || 0) +
+                          (metrics.rectification_outcomes.unchanged || 0) || 1;
+                        const impPct = ((metrics.rectification_outcomes.improved / total) * 100).toFixed(1);
+                        const degPct = ((metrics.rectification_outcomes.degraded / total) * 100).toFixed(1);
+                        const uncPct = ((metrics.rectification_outcomes.unchanged / total) * 100).toFixed(1);
+
                         return (
-                          <div 
-                            key={idx} 
-                            className={cn(
-                              "flex items-center justify-between px-4 py-3 rounded-xl border transition-colors",
-                              isBest 
-                                ? "bg-blue-900/20 border-blue-500/30 shadow-sm" 
-                                : "bg-slate-950/50 border-slate-800/50"
-                            )}
-                          >
-                            <div className="flex items-center gap-3">
-                              {isBest && (
-                                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]"></div>
-                              )}
-                              <span className={cn(
-                                "text-sm font-medium",
-                                isBest ? "text-blue-300" : "text-slate-300"
-                              )}>
-                                Impression {score.impression_id}
-                              </span>
+                          <div className="space-y-1.5 pt-2">
+                            <div className="h-3 w-full bg-slate-800 rounded-full flex overflow-hidden">
+                              <div style={{ width: `${impPct}%` }} className="bg-emerald-500" title={`Improved: ${impPct}%`} />
+                              <div style={{ width: `${degPct}%` }} className="bg-rose-500" title={`Degraded: ${degPct}%`} />
+                              <div style={{ width: `${uncPct}%` }} className="bg-slate-500" title={`Unchanged: ${uncPct}%`} />
                             </div>
-                            <div className="flex items-center gap-4">
-                              <span className={cn(
-                                "text-sm font-mono",
-                                isBest ? "text-blue-400 font-bold" : "text-slate-400"
-                              )}>
-                                {score.score.toFixed(4)}
-                              </span>
-                              {isBest && (
-                                <span className="text-[10px] uppercase font-bold tracking-wider text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
-                                  Best Match
-                                </span>
-                              )}
+                            <div className="flex justify-between text-[11px] text-slate-400 px-1 font-mono">
+                              <span className="text-emerald-400">● Improved: {impPct}%</span>
+                              <span className="text-rose-400">● Degraded: {degPct}%</span>
+                              <span className="text-slate-400">● Unchanged: {uncPct}%</span>
                             </div>
                           </div>
                         );
-                      })}
+                      })()}
+                    </div>
+                  )}
+                </div>
+
+                {/* Interactive SVG Charts: ROC Curve & Score Distribution */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* ROC Curve Chart */}
+                  <div className="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                        <Activity className="h-4 w-4 text-emerald-400" />
+                        Receiver Operating Characteristic (ROC)
+                      </h3>
+                      <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                        AUC: {(metrics.rectified_metrics.roc_auc * 100).toFixed(2)}%
+                      </span>
+                    </div>
+
+                    {/* SVG ROC Plot */}
+                    <div className="relative aspect-square w-full max-w-sm mx-auto bg-slate-950 rounded-xl p-4 border border-slate-800">
+                      <svg viewBox="0 0 200 200" className="w-full h-full overflow-visible">
+                        {/* Grid lines */}
+                        <line x1="20" y1="20" x2="190" y2="20" stroke="#334155" strokeDasharray="3 3" />
+                        <line x1="20" y1="105" x2="190" y2="105" stroke="#334155" strokeDasharray="3 3" />
+                        <line x1="105" y1="20" x2="105" y2="190" stroke="#334155" strokeDasharray="3 3" />
+                        <line x1="190" y1="20" x2="190" y2="190" stroke="#334155" strokeDasharray="3 3" />
+
+                        {/* Axes */}
+                        <line x1="20" y1="190" x2="190" y2="190" stroke="#64748b" strokeWidth="1.5" />
+                        <line x1="20" y1="20" x2="20" y2="190" stroke="#64748b" strokeWidth="1.5" />
+
+                        {/* Diagonal Chance Line (AUC=0.50) */}
+                        <line x1="20" y1="190" x2="190" y2="20" stroke="#475569" strokeDasharray="4 4" strokeWidth="1.2" />
+
+                        {/* ROC Curve Path */}
+                        {metrics.roc_curve && metrics.roc_curve.fpr && metrics.roc_curve.tpr && (
+                          <polyline
+                            fill="none"
+                            stroke="#10b981"
+                            strokeWidth="2.5"
+                            points={metrics.roc_curve.fpr
+                              .map((fpr, i) => {
+                                const tpr = metrics.roc_curve!.tpr[i] || 0;
+                                const x = 20 + fpr * 170;
+                                const y = 190 - tpr * 170;
+                                return `${x.toFixed(1)},${y.toFixed(1)}`;
+                              })
+                              .join(' ')}
+                          />
+                        )}
+
+                        {/* Labels */}
+                        <text x="105" y="202" textAnchor="middle" fill="#94a3b8" fontSize="8" fontFamily="sans-serif">
+                          False Positive Rate (FPR)
+                        </text>
+                        <text x="-105" y="10" transform="rotate(-90)" textAnchor="middle" fill="#94a3b8" fontSize="8" fontFamily="sans-serif">
+                          True Positive Rate (TPR)
+                        </text>
+                      </svg>
+                    </div>
+
+                    <div className="flex justify-between items-center text-xs text-slate-400 pt-2 border-t border-slate-800/80">
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500" /> SourceAFIS ROC Curve
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full bg-slate-500" /> Random Guess Line
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Score Distribution Chart */}
+                  <div className="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                        <BarChart3 className="h-4 w-4 text-cyan-400" />
+                        Genuine vs Impostor Score Distribution
+                      </h3>
+                      <span className="text-xs text-slate-500">Similarity Binning</span>
+                    </div>
+
+                    {/* SVG Histogram */}
+                    <div className="aspect-square w-full max-w-sm mx-auto bg-slate-950 rounded-xl p-4 border border-slate-800 flex flex-col justify-end">
+                      {metrics.score_distribution && (
+                        <div className="h-full flex items-end justify-between gap-1 pt-6 pb-2">
+                          {metrics.score_distribution.bin_edges.slice(0, 15).map((_edge, i) => {
+                            const gen = metrics.score_distribution!.genuine_counts[i] || 0;
+                            const imp = metrics.score_distribution!.impostor_counts[i] || 0;
+                            const maxVal = Math.max(
+                              1,
+                              ...metrics.score_distribution!.genuine_counts,
+                              ...metrics.score_distribution!.impostor_counts
+                            );
+                            const genHeight = (gen / maxVal) * 100;
+                            const impHeight = (imp / maxVal) * 100;
+
+                            return (
+                              <div key={i} className="flex-1 flex flex-col items-center gap-0.5 h-full justify-end group relative">
+                                <div className="w-full flex gap-0.5 items-end h-full">
+                                  <div
+                                    style={{ height: `${genHeight}%` }}
+                                    className="w-1/2 bg-emerald-500/80 rounded-t-sm transition-all"
+                                  />
+                                  <div
+                                    style={{ height: `${impHeight}%` }}
+                                    className="w-1/2 bg-rose-500/80 rounded-t-sm transition-all"
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div className="flex justify-between text-[10px] text-slate-500 font-mono border-t border-slate-800 pt-1">
+                        <span>0.0</span>
+                        <span>0.2</span>
+                        <span>0.4</span>
+                        <span>0.6</span>
+                        <span>0.8</span>
+                        <span>1.0</span>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-between items-center text-xs text-slate-400 pt-2 border-t border-slate-800/80">
+                      <span className="flex items-center gap-1.5 text-emerald-400">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500" /> Genuine Pairs
+                      </span>
+                      <span className="flex items-center gap-1.5 text-rose-400">
+                        <span className="h-2 w-2 rounded-full bg-rose-500" /> Impostor Pairs
+                      </span>
                     </div>
                   </div>
                 </div>
-
-              </>
-            ) : (
-              // Empty State
-              <div className="h-full min-h-[400px] border-2 border-dashed border-slate-800 rounded-2xl flex flex-col items-center justify-center text-center p-8 bg-slate-900/30">
-                <ShieldCheck className="w-16 h-16 text-slate-700 mb-4" />
-                <h3 className="text-lg font-medium text-slate-400 mb-2">Ready for Authentication</h3>
-                <p className="text-sm text-slate-500 max-w-sm">
-                  Upload a fingerprint image and provide an identity code to begin the biometric authentication process.
-                </p>
               </div>
             )}
-            
           </div>
-          
-        </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB 3: MYSQL DATASET & REPOSITORY STATUS                                  */}
+        {/* ========================================================================= */}
+        {activeTab === 'dataset' && (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+                  <Database className="h-6 w-6 text-emerald-400" />
+                  MySQL Biometric Database & Gallery
+                </h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Enrolled Family Fingerprint Dataset and pre-computed SourceAFIS templates.
+                </p>
+              </div>
+
+              <button
+                onClick={fetchStats}
+                className="px-4 py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-2 transition-all border border-slate-700"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Refresh Database Stats
+              </button>
+            </div>
+
+            {/* Inventory KPI Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
+                <p className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Total Fingerprints</p>
+                <p className="text-3xl font-extrabold font-mono text-white">
+                  {stats?.total_fingerprints || 0}
+                </p>
+                <p className="text-xs text-slate-500">Records in MySQL `fingerprints`</p>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
+                <p className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Identities / Subjects</p>
+                <p className="text-3xl font-extrabold font-mono text-emerald-400">
+                  {stats?.total_subjects || 0}
+                </p>
+                <p className="text-xs text-slate-500">Distinct enrolled persons</p>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
+                <p className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Families Represented</p>
+                <p className="text-3xl font-extrabold font-mono text-cyan-400">
+                  {stats?.total_families || 0}
+                </p>
+                <p className="text-xs text-slate-500">FAMILY-1 through FAMILY-100</p>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
+                <p className="text-xs text-slate-400 uppercase tracking-wider font-semibold">SourceAFIS Templates</p>
+                <p className="text-3xl font-extrabold font-mono text-violet-400">
+                  {stats?.generated_templates || 0}
+                </p>
+                <p className="text-xs text-slate-500">
+                  Failed: {stats?.failed_templates || 0}
+                </p>
+              </div>
+            </div>
+
+            {/* Architecture Card */}
+            <div className="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                Database Schema & Biometric Storage Architecture
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs font-mono">
+                <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                  <p className="font-bold text-emerald-400 font-sans">TABLE: fingerprints</p>
+                  <p className="text-slate-400">• fingerprint_id (PK AUTO_INC)</p>
+                  <p className="text-slate-400">• subject_id (VARCHAR INDEX)</p>
+                  <p className="text-slate-400">• family_id, member_type</p>
+                  <p className="text-slate-400">• impression_id, filename</p>
+                  <p className="text-slate-400">• distortion_type, dataset_split</p>
+                  <p className="text-slate-400">• image_width, image_height</p>
+                </div>
+
+                <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                  <p className="font-bold text-cyan-400 font-sans">TABLE: fingerprint_templates</p>
+                  <p className="text-slate-400">• template_id (PK AUTO_INC)</p>
+                  <p className="text-slate-400">• fingerprint_id (FK INDEX)</p>
+                  <p className="text-slate-400">• template_data (LONGBLOB)</p>
+                  <p className="text-slate-400">• minutiae_count (INT)</p>
+                  <p className="text-slate-400">• template_version (sourceafis_v1)</p>
+                  <p className="text-slate-400">• generation_status</p>
+                </div>
+
+                <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                  <p className="font-bold text-violet-400 font-sans">TABLE: evaluation_results</p>
+                  <p className="text-slate-400">• evaluation_id (PK AUTO_INC)</p>
+                  <p className="text-slate-400">• original_score, rectified_score</p>
+                  <p className="text-slate-400">• original_match, rectified_match</p>
+                  <p className="text-slate-400">• score_diff, outcome</p>
+                  <p className="text-slate-400">• label (1:genuine, 0:impostor)</p>
+                  <p className="text-slate-400">• processing_time_ms</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
+
+      {/* Footer */}
+      <footer className="border-t border-slate-900 bg-slate-950/80 py-4 text-center text-xs text-slate-500">
+        <p>Fingerprint Distortion Rectification System • MySQL Server + DDRNet_DIR + SourceAFIS</p>
+      </footer>
     </div>
   );
 }
